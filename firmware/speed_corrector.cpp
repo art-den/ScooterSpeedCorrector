@@ -85,7 +85,7 @@ static const AdcPwmItem transl_table2[]  = {
 #define Pwm2Pin PB4
 
 // Канал АЦП для чтения значения с курка
-#define AdcChan 1
+#define AdcChan 3
 
 // Максимальное значение с АЦП
 #define MaxAdc 1023L
