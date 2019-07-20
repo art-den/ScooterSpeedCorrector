@@ -20,10 +20,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ******************************************************************************/
 
-#define F_CPU 1000000
+#define F_CPU 8000000
 
 #include <util/delay.h>
 #include <avr/io.h>
+#include <avr/interrupt.h>
 #include <stdint.h>
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -37,7 +38,7 @@ SOFTWARE.
 
 // Максимальное время набора скорости в секундах
 // Выходной сигнал от 0 до MaxV будет нарастать за это время
-#define MaxGainTime 3
+#define MaxGainTime 2
 
 // Максимальное время спада скорости в секундах
 // Выходной сигнал от MaxV до 0 будет спадать за это время
@@ -91,10 +92,14 @@ static const AdcPwmItem transl_table2[]  = {
 #define MaxAdc 1023L
 
 // Максимально возможное значение ШИМ
-#define MaxPwm 255L
+#define MaxPwm 1023L
 
 // Делитель частоты таймера для отсчёта периода
 #define PeriodTimerPrescaler 1024
+
+// Т.к. не хватает делителя таймера отсчёта периода, есть ешё
+// счётчик тиков таймера
+#define PeriodTimerCnt 4
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -103,7 +108,7 @@ static void init_adc()
 {
 	ADCSRA =
 		_BV(ADEN) |             // Enable ADC
-		_BV(ADPS1) | _BV(ADPS0) // clk div 8
+		_BV(ADPS2) | _BV(ADPS0) // clk div 32
 	;
 
 	ADMUX = 0; // ref. voltage = Vcc
@@ -115,7 +120,7 @@ static void init_pwm()
 	TCCR1 =
 		_BV(PWM1A)  | // Pulse Width Modulator A Enable
 		_BV(COM1A0) | // Comparator A Output Mode = PWM
-		_BV(CS10);    // clk/1
+		_BV(CS11);    // clk/2
 
 	GTCCR =
 		_BV(PWM1B) | // Pulse Width Modulator B Enable
@@ -128,6 +133,8 @@ static void init_pwm()
 	DDRB =
 		_BV(Pwm1Pin) | // Пины ШИМ на выход
 		_BV(Pwm2Pin);
+
+	TIMSK = _BV(TOIE1);
 }
 
 // Инициализация таймера для отсчёта периода замера
@@ -140,12 +147,52 @@ static void init_period_timer()
 		_BV(CS00)|_BV(CS02); // clk/1024
 
 	// Делаем чтобы таймер тикал с частотой WorkFreq
-	constexpr uint32_t TimerPeriod = (F_CPU / (WorkFreq * PeriodTimerPrescaler));
-	static_assert((TimerPeriod > 1) || (TimerPeriod <= 255), "Wrong WorkFreq or F_CPU");
+	constexpr uint32_t TimerPeriod = (F_CPU / ((uint32_t)WorkFreq * (uint32_t)PeriodTimerPrescaler * (uint32_t)PeriodTimerCnt));
+	static_assert((TimerPeriod > 1) && (TimerPeriod <= 255), "Wrong WorkFreq or F_CPU");
 	OCR0A = TimerPeriod;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+
+// Глобальные переменные для эмуляции 10-разрядного ШИМ
+
+volatile uint8_t pwm_values1[4] = {0};
+volatile uint8_t pwm_values2[4] = {0};
+volatile uint8_t pwm_cycle = 0;
+
+// Прерывание по переполнению таймера для эмуляции 10-разрядного ШИМ
+ISR (TIMER1_OVF_vect)
+{
+	OCR1A = pwm_values1[pwm_cycle];
+	OCR1B = pwm_values2[pwm_cycle];
+	pwm_cycle = (pwm_cycle + 1) & 0x03;
+}
+
+// Установка значений ШИМ для 2-х каналов
+static void set_pwm_values(uint16_t value1, uint16_t value2)
+{
+	auto set_pwm_vector = [] (uint16_t value, volatile uint8_t *vector)
+	{
+		for (uint8_t i = 0; i < 4; i++)
+		{
+			if (value >= 256)
+			{
+				*vector++ = 255;
+				value -= 256;
+			}
+			else
+			{
+				*vector++ = value;
+				value = 0;
+			}
+		}
+	};
+
+	cli();
+	set_pwm_vector(value1, pwm_values1);
+	set_pwm_vector(value2, pwm_values2);
+	sei();
+}
 
 // Чтение значения АЦП по указанному каналу
 static uint16_t read_adc_value(uint8_t channel, bool delay_2_ms)
@@ -256,7 +303,7 @@ static uint16_t adc_to_voltage(uint16_t adc_value, uint16_t rev_voltage)
 }
 
 // Перевод значения напряжения в величину ШИМ для таймера
-static uint8_t voltage_to_pwm(uint16_t voltage, uint16_t rev_voltage)
+static uint16_t voltage_to_pwm(uint16_t voltage, uint16_t rev_voltage)
 {
 	if (rev_voltage == 0) return 0;
 	int32_t value = (int32_t)MaxPwm * (int32_t)voltage / (int32_t)rev_voltage;
@@ -266,27 +313,45 @@ static uint8_t voltage_to_pwm(uint16_t voltage, uint16_t rev_voltage)
 }
 
 // Обработка текущей ситуации для одного колеса
-static void process_for_channel(
+static uint16_t process_for_channel(
 	uint16_t         in_voltage,
 	uint16_t         adc_ref_voltage,
 	int16_t          &smooth_voltage,
 	const AdcPwmItem *table,
-	const uint8_t    table_size,
-	volatile uint8_t &pwm_register)
+	const uint8_t    table_size)
 {
 	// Преобразуем входное напряжение в выходное по таблице
 	auto out_voltage = translate_volatge(in_voltage, table, table_size);
 
-	// Плавно приближаем smooth_voltage к out_voltage
-	int16_t diff = out_voltage - smooth_voltage;
-	constexpr int16_t MaxGainDiff = (int32_t)MaxV / ((int32_t)MaxGainTime * (int32_t)WorkFreq);
-	if (diff > MaxGainDiff) diff = MaxGainDiff;
-	constexpr int16_t MaxDropDiff = (int32_t)MaxV / ((int32_t)MaxDropTime * (int32_t)WorkFreq);
-	if (diff < -MaxDropDiff) diff = -MaxDropDiff;
-	smooth_voltage += diff;
+	// Если напряжение меньше MinV, то просто выдаём его на выход
+	if (out_voltage < MinV)
+	{
+		smooth_voltage = out_voltage;
+	}
+
+	// ... иначе плавно приближаем smooth_voltage к out_voltage
+	else
+	{
+		int16_t diff = out_voltage - smooth_voltage;
+		constexpr int16_t MaxGainDiff = (int32_t)MaxV / ((int32_t)MaxGainTime * (int32_t)WorkFreq);
+		if (diff > MaxGainDiff) diff = MaxGainDiff;
+		constexpr int16_t MaxDropDiff = (int32_t)MaxV / ((int32_t)MaxDropTime * (int32_t)WorkFreq);
+		if (diff < -MaxDropDiff) diff = -MaxDropDiff;
+		smooth_voltage += diff;
+	}
 
 	// Записываем значение в регистр ШИМ
-	pwm_register = voltage_to_pwm(smooth_voltage, adc_ref_voltage);
+	return voltage_to_pwm(smooth_voltage, adc_ref_voltage);
+}
+
+// Ожидание когда тикнет таймер, который отсчитывает период
+static void wait_for_period_timer()
+{
+	for (uint8_t i = 0; i < PeriodTimerCnt; i++)
+	{
+		while (!(TIFR & OCF0A)) {}
+		TIFR = OCF0A;
+	}
 }
 
 int main()
@@ -310,8 +375,7 @@ int main()
 	for (;;)
 	{
 		// Ждём пока не тикнет таймер, который отсчитывает период
-		while (!(TIFR & OCF0A)) {}
-		TIFR = OCF0A;
+		wait_for_period_timer();
 
 		// Читаем значение эталонного источника 1.1 вольт
 		uint16_t adc1100 = read_filtered_adc_value(0b1100, true);
@@ -326,23 +390,24 @@ int main()
 		uint16_t in_voltage = adc_to_voltage(adc_value, adc_ref_voltage);
 
 		// Производим обработку для основного колеса
-		process_for_channel(
+		uint16_t pwm_value1 = process_for_channel(
 			in_voltage,
 			adc_ref_voltage,
 			smooth_voltage1,
 			transl_table1,
-			sizeof(transl_table1)/sizeof(AdcPwmItem),
-			OCR1A
+			sizeof(transl_table1)/sizeof(AdcPwmItem)
 		);
 
 		// Производим обработку для колеса с редуктором
-		process_for_channel(
+		uint16_t pwm_value2 = process_for_channel(
 			in_voltage,
 			adc_ref_voltage,
 			smooth_voltage2,
 			transl_table2,
-			sizeof(transl_table2)/sizeof(AdcPwmItem),
-			OCR1B
+			sizeof(transl_table2)/sizeof(AdcPwmItem)
 		);
+
+		// Выдаём напряжения на выход через ШИМ
+		set_pwm_values(pwm_value1, pwm_value2);
 	}
 }
