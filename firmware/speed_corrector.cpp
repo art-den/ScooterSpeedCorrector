@@ -40,7 +40,7 @@ SOFTWARE.
 // Минимальное напряжение на входе контроллера, на котором начинает крутиться колесо
 #define MinV 1200
 
-// Тепень нелинейности (от 0 до 5).
+// Степень нелинейности (от 0 до 5).
 // 0 - линейная характеристика
 // 3 - нелинейная
 // 5 - сильно нелинейная
@@ -76,11 +76,13 @@ static const AdcPwmItem transl_table1[] = {
 };
 
 // Таблица для колеса с редуктором
+constexpr uint16_t Roff = (MidIn + MaxVg)/2;
 static const AdcPwmItem transl_table2[] = {
 	{0,     0     },
 	{MinV,  MinV  },
 	{MidIn, MidOut},
-	{MaxVg, MidOut},
+	{Roff,  MidOut},
+	{MaxVg, 0     },
 	{5500,  0     }
 };
 
