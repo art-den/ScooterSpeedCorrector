@@ -31,17 +31,21 @@ SOFTWARE.
 /* Основные настройки */
 
 // Максимальное выходное напряжение ручки газа в милливольтах
-#define MaxV 4300
+#define MaxVg 3600
+
+// Максимальное напряжение на входе контроллера, после которого
+// колесо перестаёт набирать обороты
+#define MaxVk 3600
 
 // Минимальное напряжение на входе контроллера, на котором начинает крутиться колесо
 #define MinV 1200
 
 // Максимальное время набора скорости в секундах
-// Выходной сигнал от 0 до MaxV будет нарастать за это время
+// Выходной сигнал от 0 до MaxVk будет нарастать за это время
 #define MaxGainTime 2
 
 // Максимальное время спада скорости в секундах
-// Выходной сигнал от MaxV до 0 будет спадать за это время
+// Выходной сигнал от MaxVk до 0 будет спадать за это время
 #define MaxDropTime 1
 
 // Одна запись таблицы трансляции
@@ -51,27 +55,27 @@ struct AdcPwmItem
 	uint16_t out_mv; // выходное напряжение в милливольтах
 };
 
+constexpr uint16_t MidIn = 2 * (MinV + MaxVg) / 3;
+constexpr uint16_t MidOut = (MinV + MaxVk) / 3;
+
 // Таблица для основного ведущего колеса
 // Если у вас одноприводный девайс, то надо менять именно эту таблицу
 // Значения в виде {Vin, Vout} в милливольтах
-static const AdcPwmItem transl_table1[]  = {
-	{   0,    0},
-	{MinV, MinV},
-	{3000, 1700},
-	{3600, 2200},
-	{MaxV, MaxV},
-	{5500, 5500}
+static const AdcPwmItem transl_table1[] = {
+	{0,     0     },
+	{MinV,  MinV  },
+	{MidIn, MidOut},
+	{MaxVg, MaxVg },
+	{5500,  5500  }
 };
 
 // Таблица для колеса с редуктором
-static const AdcPwmItem transl_table2[]  = {
-	{   0,    0},
-	{MinV, MinV},
-	{3000, 1700},
-	{3600, 2200},
-	{4000, 3000},
-	{MaxV,    0},
-	{5500,    0}
+static const AdcPwmItem transl_table2[] = {
+	{0,     0     },
+	{MinV,  MinV  },
+	{MidIn, MidOut},
+	{MaxVg, MidOut},
+	{5500,  0     }
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -333,9 +337,9 @@ static uint16_t process_for_channel(
 	else
 	{
 		int16_t diff = out_voltage - smooth_voltage;
-		constexpr int16_t MaxGainDiff = (int32_t)MaxV / ((int32_t)MaxGainTime * (int32_t)WorkFreq);
+		constexpr int16_t MaxGainDiff = (int32_t)MaxVk / ((int32_t)MaxGainTime * (int32_t)WorkFreq);
 		if (diff > MaxGainDiff) diff = MaxGainDiff;
-		constexpr int16_t MaxDropDiff = (int32_t)MaxV / ((int32_t)MaxDropTime * (int32_t)WorkFreq);
+		constexpr int16_t MaxDropDiff = (int32_t)MaxVk / ((int32_t)MaxDropTime * (int32_t)WorkFreq);
 		if (diff < -MaxDropDiff) diff = -MaxDropDiff;
 		smooth_voltage += diff;
 	}
