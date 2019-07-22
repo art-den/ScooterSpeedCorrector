@@ -89,7 +89,7 @@ static const AdcPwmItem transl_table2[] = {
 ///////////////////////////////////////////////////////////////////////////////
 
 // Частота обработки данных
-#define WorkFreq 20
+constexpr uint32_t WorkFreq = 20;
 
 // Выходной пин ШИМ для основного колеса
 #define Pwm1Pin PB1
@@ -98,20 +98,20 @@ static const AdcPwmItem transl_table2[] = {
 #define Pwm2Pin PB4
 
 // Канал АЦП для чтения значения с курка
-#define AdcChan 3
+constexpr uint8_t AdcChan = 3;
 
 // Максимальное значение с АЦП
-#define MaxAdc 1023L
+constexpr uint32_t MaxAdc = 1023;
 
 // Максимально возможное значение ШИМ
-#define MaxPwm 1023L
+constexpr int32_t MaxPwm = 1023;
 
 // Делитель частоты таймера для отсчёта периода
-#define PeriodTimerPrescaler 1024
+constexpr uint32_t PeriodTimerPrescaler = 1024;
 
 // Т.к. не хватает делителя таймера отсчёта периода, есть ешё
 // счётчик тиков таймера
-#define PeriodTimerCnt 4
+constexpr uint8_t PeriodTimerCnt = 4;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -159,7 +159,7 @@ static void init_period_timer()
 		_BV(CS00)|_BV(CS02); // clk/1024
 
 	// Делаем чтобы таймер тикал с частотой WorkFreq
-	constexpr uint32_t TimerPeriod = (F_CPU / ((uint32_t)WorkFreq * (uint32_t)PeriodTimerPrescaler * (uint32_t)PeriodTimerCnt));
+	constexpr uint32_t TimerPeriod = (F_CPU / (WorkFreq * PeriodTimerPrescaler * (uint32_t)PeriodTimerCnt));
 	static_assert((TimerPeriod > 1) && (TimerPeriod <= 255), "Wrong WorkFreq or F_CPU");
 	OCR0A = TimerPeriod;
 }
@@ -318,7 +318,7 @@ static uint16_t adc_to_voltage(uint16_t adc_value, uint16_t rev_voltage)
 static uint16_t voltage_to_pwm(uint16_t voltage, uint16_t rev_voltage)
 {
 	if (rev_voltage == 0) return 0;
-	int32_t value = (int32_t)MaxPwm * (int32_t)voltage / (int32_t)rev_voltage;
+	int32_t value = MaxPwm * (int32_t)voltage / (int32_t)rev_voltage;
 	if (value < 0) value = 0;
 	if (value > MaxPwm) value = MaxPwm;
 	return value;
@@ -345,9 +345,9 @@ static uint16_t process_for_channel(
 	else
 	{
 		int16_t diff = out_voltage - smooth_voltage;
-		constexpr int16_t MaxGainDiff = (int32_t)MaxVk / ((int32_t)MaxGainTime * (int32_t)WorkFreq);
+		constexpr int16_t MaxGainDiff = (int32_t)MaxVk / ((int32_t)MaxGainTime * WorkFreq);
 		if (diff > MaxGainDiff) diff = MaxGainDiff;
-		constexpr int16_t MaxDropDiff = (int32_t)MaxVk / ((int32_t)MaxDropTime * (int32_t)WorkFreq);
+		constexpr int16_t MaxDropDiff = (int32_t)MaxVk / ((int32_t)MaxDropTime * WorkFreq);
 		if (diff < -MaxDropDiff) diff = -MaxDropDiff;
 		smooth_voltage += diff;
 	}
