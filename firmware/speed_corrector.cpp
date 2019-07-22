@@ -168,9 +168,9 @@ static void init_period_timer()
 
 // Глобальные переменные для эмуляции 10-разрядного ШИМ
 
-volatile uint8_t pwm_values1[4] = {0};
-volatile uint8_t pwm_values2[4] = {0};
-volatile uint8_t pwm_cycle = 0;
+static volatile uint8_t pwm_values1[4] = {0};
+static volatile uint8_t pwm_values2[4] = {0};
+static volatile uint8_t pwm_cycle = 0;
 
 // Прерывание по переполнению таймера для эмуляции 10-разрядного ШИМ
 ISR (TIMER1_OVF_vect)
@@ -352,7 +352,7 @@ static uint16_t process_for_channel(
 		smooth_voltage += diff;
 	}
 
-	// Записываем значение в регистр ШИМ
+	// Возвращаем значение для ШИМ
 	return voltage_to_pwm(smooth_voltage, adc_ref_voltage);
 }
 
