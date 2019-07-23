@@ -1,3 +1,3 @@
 #  Делаем старт электросамоката менее дёрганным
 
-!{blob/master/images/SpeedCorr.GIF}
+![Схема]{https://github.com/art-den/ScooterSpeedCorrector/blob/master/images/SpeedCorr.GIF}
