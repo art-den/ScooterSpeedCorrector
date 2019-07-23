@@ -44,7 +44,7 @@ SOFTWARE.
 // 0 - линейная характеристика
 // 3 - нелинейная
 // 5 - сильно нелинейная
-#define K 4
+#define K 3
 
 // Максимальное время набора скорости в секундах
 // Выходной сигнал от 0 до MaxVk будет нарастать за это время
@@ -61,6 +61,7 @@ struct AdcPwmItem
 	uint16_t out_mv; // выходное напряжение в милливольтах
 };
 
+// Точки перегиба на кривой. Их менять не надо
 constexpr uint16_t MidIn1  = (15L-2L + K) * (MinV + MaxVg) / 30L;
 constexpr uint16_t MidOut1 = (15L-2L - K) * (MinV + MaxVk) / 30L;
 constexpr uint16_t MidIn2  = (15L+2L + K) * (MinV + MaxVg) / 30L;
@@ -90,6 +91,12 @@ static const AdcPwmItem transl_table2[] = {
 	{5500,   0      }
 };
 
+// Коэфициент усиления на выходе в процентах
+// Нужен чтобы компенсировать низкое входное сопротивление входа
+// контроллера для ручки газа, из-за которого просаживается
+// выходное напряжение с RC-цепочки
+constexpr uint32_t OutGain = 100;
+
 ///////////////////////////////////////////////////////////////////////////////
 
 // Частота обработки данных
@@ -108,7 +115,7 @@ constexpr uint8_t AdcChan = 3;
 constexpr uint32_t MaxAdc = 1023;
 
 // Максимально возможное значение ШИМ
-constexpr int32_t MaxPwm = 1023;
+constexpr uint32_t MaxPwm = 1023;
 
 // Делитель частоты таймера для отсчёта периода
 constexpr uint32_t PeriodTimerPrescaler = 1024;
@@ -322,8 +329,7 @@ static uint16_t adc_to_voltage(uint16_t adc_value, uint16_t rev_voltage)
 static uint16_t voltage_to_pwm(uint16_t voltage, uint16_t rev_voltage)
 {
 	if (rev_voltage == 0) return 0;
-	int32_t value = MaxPwm * (int32_t)voltage / (int32_t)rev_voltage;
-	if (value < 0) value = 0;
+	uint32_t value = MaxPwm * (uint32_t)voltage / (uint32_t)rev_voltage;
 	if (value > MaxPwm) value = MaxPwm;
 	return value;
 }
@@ -357,7 +363,7 @@ static uint16_t process_for_channel(
 	}
 
 	// Возвращаем значение для ШИМ
-	return voltage_to_pwm(smooth_voltage, adc_ref_voltage);
+	return voltage_to_pwm((OutGain * (uint32_t)smooth_voltage + 50UL) / 100UL, adc_ref_voltage);
 }
 
 // Ожидание когда тикнет таймер, который отсчитывает период
@@ -395,9 +401,10 @@ int main()
 
 		// Читаем значение эталонного источника 1.1 вольт
 		uint16_t adc1100 = read_filtered_adc_value(0b1100, true);
+		if (adc1100 == 0) continue; // "не заводимся", если что-то пошло не так
 
 		// Получаем текущее значение напряжения питания
-		uint16_t adc_ref_voltage = (int32_t)MaxAdc * 1100L / (int32_t)adc1100;
+		uint16_t adc_ref_voltage = (uint32_t)MaxAdc * 1100UL / (uint32_t)adc1100;
 
 		// Читаем значение АЦП с курка
 		uint16_t adc_value = read_filtered_adc_value(AdcChan, false);
