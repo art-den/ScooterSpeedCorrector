@@ -31,28 +31,40 @@ SOFTWARE.
 /* Основные настройки */
 
 // Максимальное выходное напряжение ручки газа в милливольтах
-#define MaxVg 3600
+#ifndef MaxVg
+	#define MaxVg 3600
+#endif
 
 // Максимальное напряжение на входе контроллера, после которого
 // колесо перестаёт набирать обороты
-#define MaxVk 3600
+#ifndef MaxVk
+	#define MaxVk 3600
+#endif
 
 // Минимальное напряжение на входе контроллера, на котором начинает крутиться колесо
-#define MinV 1200
+#ifndef MinV
+	#define MinV 1200
+#endif
 
 // Степень нелинейности (от 0 до 5).
 // 0 - линейная характеристика
 // 3 - нелинейная
 // 5 - сильно нелинейная
-#define K 3
+#ifndef K
+	#define K 3
+#endif
 
 // Максимальное время набора скорости в секундах
 // Выходной сигнал от 0 до MaxVk будет нарастать за это время
-#define MaxGainTime 2
+#ifndef MaxGainTime
+	#define MaxGainTime 3
+#endif
 
 // Максимальное время спада скорости в секундах
 // Выходной сигнал от MaxVk до 0 будет спадать за это время
-#define MaxDropTime 1
+#ifndef MaxDropTime
+	#define MaxDropTime 1
+#endif
 
 // Одна запись таблицы трансляции
 struct AdcPwmItem
@@ -61,7 +73,7 @@ struct AdcPwmItem
 	uint16_t out_mv; // выходное напряжение в милливольтах
 };
 
-// Точки перегиба на кривой. Их менять не надо
+// Точки перегиба на кривой. Их вручную менять не надо
 constexpr uint16_t MidIn1  = (15L-2L + K) * (MinV + MaxVg) / 30L;
 constexpr uint16_t MidOut1 = (15L-2L - K) * (MinV + MaxVk) / 30L;
 constexpr uint16_t MidIn2  = (15L+2L + K) * (MinV + MaxVg) / 30L;
@@ -80,22 +92,22 @@ static const AdcPwmItem transl_table1[] = {
 };
 
 // Таблица для колеса с редуктором
-constexpr uint16_t Roff = (MidIn2 + MaxVg)/2;
 static const AdcPwmItem transl_table2[] = {
 	{0,      0      },
 	{MinV,   MinV   },
 	{MidIn1, MidOut1},
 	{MidIn2, MidOut2},
-	{Roff,   MidOut2},
-	{MaxVg,  0      },
-	{5500,   0      }
+	{MaxVg,  MidOut2},
+	{5500,   5500   }
 };
 
 // Коэфициент усиления на выходе в процентах
 // Нужен чтобы компенсировать низкое входное сопротивление входа
 // контроллера для ручки газа, из-за которого просаживается
 // выходное напряжение с RC-цепочки
-constexpr uint32_t OutGain = 100;
+#ifndef OutGain
+	#define OutGain 100
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -169,7 +181,7 @@ static void init_period_timer()
 	TCCR0B =
 		_BV(CS00)|_BV(CS02); // clk/1024
 
-	// Делаем чтобы таймер тикал с частотой WorkFreq
+	// Делаем чтобы таймер тикал с частотой WorkFreq*PeriodTimerCnt
 	constexpr uint32_t TimerPeriod = (F_CPU / (WorkFreq * PeriodTimerPrescaler * (uint32_t)PeriodTimerCnt));
 	static_assert((TimerPeriod > 1) && (TimerPeriod <= 255), "Wrong WorkFreq or F_CPU");
 	OCR0A = TimerPeriod;
@@ -363,7 +375,7 @@ static uint16_t process_for_channel(
 	}
 
 	// Возвращаем значение для ШИМ
-	return voltage_to_pwm((OutGain * (uint32_t)smooth_voltage + 50UL) / 100UL, adc_ref_voltage);
+	return voltage_to_pwm(((uint32_t)OutGain * (uint32_t)smooth_voltage + 50UL) / 100UL, adc_ref_voltage);
 }
 
 // Ожидание когда тикнет таймер, который отсчитывает период
