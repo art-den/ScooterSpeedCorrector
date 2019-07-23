@@ -44,7 +44,7 @@ SOFTWARE.
 // 0 - линейная характеристика
 // 3 - нелинейная
 // 5 - сильно нелинейная
-#define K 5
+#define K 4
 
 // Максимальное время набора скорости в секундах
 // Выходной сигнал от 0 до MaxVk будет нарастать за это время
@@ -61,29 +61,33 @@ struct AdcPwmItem
 	uint16_t out_mv; // выходное напряжение в милливольтах
 };
 
-constexpr uint16_t MidIn = (15L + K) * (MinV + MaxVg) / 30L;
-constexpr uint16_t MidOut = (15L - K) * (MinV + MaxVk) / 30L;
+constexpr uint16_t MidIn1  = (15L-2L + K) * (MinV + MaxVg) / 30L;
+constexpr uint16_t MidOut1 = (15L-2L - K) * (MinV + MaxVk) / 30L;
+constexpr uint16_t MidIn2  = (15L+2L + K) * (MinV + MaxVg) / 30L;
+constexpr uint16_t MidOut2 = (15L+2L - K) * (MinV + MaxVk) / 30L;
 
 // Таблица для основного ведущего колеса
 // Если у вас одноприводный девайс, то надо менять именно эту таблицу
 // Значения в виде {Vin, Vout} в милливольтах
 static const AdcPwmItem transl_table1[] = {
-	{0,     0     },
-	{MinV,  MinV  },
-	{MidIn, MidOut},
-	{MaxVg, MaxVg },
-	{5500,  5500  }
+	{0,      0      },
+	{MinV,   MinV   },
+	{MidIn1, MidOut1},
+	{MidIn2, MidOut2},
+	{MaxVg,  MaxVg  },
+	{5500,   5500   }
 };
 
 // Таблица для колеса с редуктором
-constexpr uint16_t Roff = (MidIn + MaxVg)/2;
+constexpr uint16_t Roff = (MidIn2 + MaxVg)/2;
 static const AdcPwmItem transl_table2[] = {
-	{0,     0     },
-	{MinV,  MinV  },
-	{MidIn, MidOut},
-	{Roff,  MidOut},
-	{MaxVg, 0     },
-	{5500,  0     }
+	{0,      0      },
+	{MinV,   MinV   },
+	{MidIn1, MidOut1},
+	{MidIn2, MidOut2},
+	{Roff,   MidOut2},
+	{MaxVg,  0      },
+	{5500,   0      }
 };
 
 ///////////////////////////////////////////////////////////////////////////////
