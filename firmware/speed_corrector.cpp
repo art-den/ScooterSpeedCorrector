@@ -74,9 +74,9 @@ struct AdcPwmItem
 };
 
 // Точки перегиба на кривой. Их вручную менять не надо
-constexpr uint16_t MidIn1  = (15L-2L + K) * (MinV + MaxVg) / 30L;
+constexpr uint16_t MidIn1  = (15L-2L + K/2) * (MinV + MaxVg) / 30L;
 constexpr uint16_t MidOut1 = (15L-2L - K) * (MinV + MaxVk) / 30L;
-constexpr uint16_t MidIn2  = (15L+2L + K) * (MinV + MaxVg) / 30L;
+constexpr uint16_t MidIn2  = (15L+2L + K/2) * (MinV + MaxVg) / 30L;
 constexpr uint16_t MidOut2 = (15L+2L - K) * (MinV + MaxVk) / 30L;
 
 // Таблица для основного ведущего колеса
@@ -87,7 +87,7 @@ static const AdcPwmItem transl_table1[] = {
 	{MinV,   MinV   },
 	{MidIn1, MidOut1},
 	{MidIn2, MidOut2},
-	{MaxVg,  MaxVg  },
+	{MaxVg,  MaxVk  },
 	{5500,   5500   }
 };
 
