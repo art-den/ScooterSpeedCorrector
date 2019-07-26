@@ -46,12 +46,17 @@ SOFTWARE.
 	#define MinV 1200
 #endif
 
-// Степень нелинейности (от 0 до 5).
+// Степень нелинейности для основного колеса (от 0 до 5).
 // 0 - линейная характеристика
 // 3 - нелинейная
 // 5 - сильно нелинейная
 #ifndef K
 	#define K 3
+#endif
+
+// Степень нелинейности редукторного колеса
+#ifndef Kr
+	#define Kr 3
 #endif
 
 // Максимальное время набора скорости в секундах
@@ -65,41 +70,6 @@ SOFTWARE.
 #ifndef MaxDropTime
 	#define MaxDropTime 1
 #endif
-
-// Одна запись таблицы трансляции
-struct AdcPwmItem
-{
-	uint16_t in_mv;  // входное напряжение в милливольтах
-	uint16_t out_mv; // выходное напряжение в милливольтах
-};
-
-// Точки перегиба на кривой. Их вручную менять не надо
-constexpr uint16_t MidIn1  = (15L-2L + K/2) * (MinV + MaxVg) / 30L;
-constexpr uint16_t MidOut1 = (15L-2L - K) * (MinV + MaxVk) / 30L;
-constexpr uint16_t MidIn2  = (15L+2L + K/2) * (MinV + MaxVg) / 30L;
-constexpr uint16_t MidOut2 = (15L+2L - K) * (MinV + MaxVk) / 30L;
-
-// Таблица для основного ведущего колеса
-// Если у вас одноприводный девайс, то надо менять именно эту таблицу
-// Значения в виде {Vin, Vout} в милливольтах
-static const AdcPwmItem transl_table1[] = {
-	{0,      0      },
-	{MinV,   MinV   },
-	{MidIn1, MidOut1},
-	{MidIn2, MidOut2},
-	{MaxVg,  MaxVk  },
-	{5500,   5500   }
-};
-
-// Таблица для колеса с редуктором
-static const AdcPwmItem transl_table2[] = {
-	{0,      0      },
-	{MinV,   MinV   },
-	{MidIn1, MidOut1},
-	{MidIn2, MidOut2},
-	{MaxVg,  MidOut2},
-	{5500,   5500   }
-};
 
 // Коэфициент усиления на выходе в процентах
 // Нужен чтобы компенсировать низкое входное сопротивление входа
@@ -135,6 +105,13 @@ constexpr uint32_t PeriodTimerPrescaler = 1024;
 // Т.к. не хватает делителя таймера отсчёта периода, есть ешё
 // счётчик тиков таймера
 constexpr uint8_t PeriodTimerCnt = 4;
+
+// Одна запись таблицы трансляции
+struct TranslTableItem
+{
+	uint16_t in_mv;  // входное напряжение в милливольтах
+	uint16_t out_mv; // выходное напряжение в милливольтах
+};
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -185,6 +162,24 @@ static void init_period_timer()
 	constexpr uint32_t TimerPeriod = (F_CPU / (WorkFreq * PeriodTimerPrescaler * (uint32_t)PeriodTimerCnt));
 	static_assert((TimerPeriod > 1) && (TimerPeriod <= 255), "Wrong WorkFreq or F_CPU");
 	OCR0A = TimerPeriod;
+}
+
+static void init_transl_table(uint8_t k, bool for_reductor, TranslTableItem *table)
+{
+	// Точки перегиба на кривой
+	uint16_t mid_in1  = (uint32_t)(15-2 + k/2) * (MinV + MaxVg) / 30L;
+	uint16_t mid_out1 = (uint32_t)(15-2 - k) * (MinV + MaxVk) / 30L;
+	uint16_t mid_in2  = (uint32_t)(15+2 + k/2) * (MinV + MaxVg) / 30L;
+	uint16_t mid_out2 = (uint32_t)(15+2 - k) * (MinV + MaxVk) / 30L;
+
+	uint16_t max_o = !for_reductor ? MaxVk : mid_out2;
+
+	table[0] = {0,       0       };
+	table[1] = {MinV,    MinV    };
+	table[2] = {mid_in1, mid_out1};
+	table[3] = {mid_in2, mid_out2};
+	table[4] = {MaxVg,   max_o   };
+	table[5] = {5500,    5500    };
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -318,7 +313,7 @@ static int32_t line_interpolate(int32_t x, int32_t x1, int32_t x2, int32_t y1, i
 
 // Перевод значения напряжения из входного в выходное по таблице.
 // Значения напряжения - в милливольтах
-static uint16_t translate_volatge(uint16_t value, const AdcPwmItem *table, const uint8_t table_size)
+static uint16_t translate_volatge(uint16_t value, const TranslTableItem *table, const uint8_t table_size)
 {
 	for (uint8_t i = 0; i < (table_size-1); i++)
 	{
@@ -351,7 +346,7 @@ static uint16_t process_for_channel(
 	uint16_t         in_voltage,
 	uint16_t         adc_ref_voltage,
 	int16_t          &smooth_voltage,
-	const AdcPwmItem *table,
+	const TranslTableItem *table,
 	const uint8_t    table_size)
 {
 	// Преобразуем входное напряжение в выходное по таблице
@@ -390,9 +385,19 @@ static void wait_for_period_timer()
 
 int main()
 {
+	// Таблица трансляции для основного ведущего колеса
+	TranslTableItem transl_table1[6] = {0};
+
+	// Таблица трансляции для колеса с редуктором
+	TranslTableItem transl_table2[6] = {0};
+
 	// "Плавные" значения выходного напряжения
 	int16_t smooth_voltage1 = 0;
 	int16_t smooth_voltage2 = 0;
+
+	// Инициализируем таблицы трансляции напряжение ручки газа
+	init_transl_table(K, false, transl_table1);
+	init_transl_table(Kr, true, transl_table2);
 
 	// Инициализируем АЦП
 	init_adc();
@@ -430,7 +435,7 @@ int main()
 			adc_ref_voltage,
 			smooth_voltage1,
 			transl_table1,
-			sizeof(transl_table1)/sizeof(AdcPwmItem)
+			sizeof(transl_table1)/sizeof(TranslTableItem)
 		);
 
 		// Производим обработку для колеса с редуктором
@@ -439,7 +444,7 @@ int main()
 			adc_ref_voltage,
 			smooth_voltage2,
 			transl_table2,
-			sizeof(transl_table2)/sizeof(AdcPwmItem)
+			sizeof(transl_table2)/sizeof(TranslTableItem)
 		);
 
 		// Выдаём напряжения на выход через ШИМ
