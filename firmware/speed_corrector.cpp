@@ -395,7 +395,7 @@ int main()
 	int16_t smooth_voltage1 = 0;
 	int16_t smooth_voltage2 = 0;
 
-	// Инициализируем таблицы трансляции напряжение ручки газа
+	// Инициализируем таблицы трансляции напряжения ручки газа
 	init_transl_table(K, false, transl_table1);
 	init_transl_table(Kr, true, transl_table2);
 
