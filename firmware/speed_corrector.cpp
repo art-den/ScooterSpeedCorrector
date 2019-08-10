@@ -362,9 +362,9 @@ static uint16_t process_for_channel(
 	else
 	{
 		int16_t diff = out_voltage - smooth_voltage;
-		constexpr int16_t MaxGainDiff = (int32_t)MaxVk / ((int32_t)MaxGainTime * WorkFreq);
+		constexpr int16_t MaxGainDiff = (int32_t)(MaxVk - MinV) / ((int32_t)MaxGainTime * WorkFreq);
 		if (diff > MaxGainDiff) diff = MaxGainDiff;
-		constexpr int16_t MaxDropDiff = (int32_t)MaxVk / ((int32_t)MaxDropTime * WorkFreq);
+		constexpr int16_t MaxDropDiff = (int32_t)(MaxVk - MinV) / ((int32_t)MaxDropTime * WorkFreq);
 		if (diff < -MaxDropDiff) diff = -MaxDropDiff;
 		smooth_voltage += diff;
 	}
