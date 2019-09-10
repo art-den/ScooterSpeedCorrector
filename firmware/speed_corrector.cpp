@@ -47,16 +47,16 @@ SOFTWARE.
 #endif
 
 // Степень нелинейности для основного колеса (от 0 до 5).
-// 0 - линейная характеристика
-// 3 - нелинейная
-// 5 - сильно нелинейная
+// 0       - линейная характеристика
+// 2 или 3 - нелинейная
+// 5       - сильно нелинейная
 #ifndef K
 	#define K 3
 #endif
 
-// Степень нелинейности редукторного колеса
-#ifndef Kr
-	#define Kr 3
+// Степень нелинейности второго колеса
+#ifndef K2
+	#define K2 3
 #endif
 
 // Максимальное время набора скорости в секундах
@@ -79,6 +79,11 @@ SOFTWARE.
 	#define OutGain 100
 #endif
 
+// Ограничение выходного управляющего напряжения второго колеса в процентах
+#ifndef V2BorderPercent
+	#define V2BorderPercent 100
+#endif
+
 ///////////////////////////////////////////////////////////////////////////////
 
 // Частота обработки данных
@@ -87,7 +92,7 @@ constexpr uint32_t WorkFreq = 20;
 // Выходной пин ШИМ для основного колеса
 #define Pwm1Pin PB1
 
-// Выходной пин ШИМ для редукторного колеса
+// Выходной пин ШИМ для второго колеса
 #define Pwm2Pin PB4
 
 // Канал АЦП для чтения значения с курка
@@ -164,7 +169,7 @@ static void init_period_timer()
 	OCR0A = TimerPeriod;
 }
 
-static void init_transl_table(uint8_t k, bool for_reductor, TranslTableItem *table)
+static void init_transl_table(uint8_t k, TranslTableItem *table)
 {
 	// Точки перегиба на кривой
 	uint16_t mid_in1  = (uint32_t)(15-2 + k/2) * (MinV + MaxVg) / 30L;
@@ -172,13 +177,11 @@ static void init_transl_table(uint8_t k, bool for_reductor, TranslTableItem *tab
 	uint16_t mid_in2  = (uint32_t)(15+2 + k/2) * (MinV + MaxVg) / 30L;
 	uint16_t mid_out2 = (uint32_t)(15+2 - k) * (MinV + MaxVk) / 30L;
 
-	uint16_t max_o = !for_reductor ? MaxVk : mid_out2;
-
 	table[0] = {0,       0       };
 	table[1] = {MinV,    MinV    };
 	table[2] = {mid_in1, mid_out1};
 	table[3] = {mid_in2, mid_out2};
-	table[4] = {MaxVg,   max_o   };
+	table[4] = {MaxVg,   MaxVk   };
 	table[5] = {5500,    5500    };
 }
 
@@ -343,14 +346,15 @@ static uint16_t voltage_to_pwm(uint16_t voltage, uint16_t rev_voltage)
 
 // Обработка текущей ситуации для одного колеса
 static uint16_t process_for_channel(
-	uint16_t         in_voltage,
-	uint16_t         adc_ref_voltage,
-	int16_t          &smooth_voltage,
+	uint16_t              in_voltage,
+	uint16_t              adc_ref_voltage,
+	uint16_t              max_voltage,
+	uint16_t              &smooth_voltage,
 	const TranslTableItem *table,
-	const uint8_t    table_size)
+	const uint8_t         table_size)
 {
 	// Преобразуем входное напряжение в выходное по таблице
-	auto out_voltage = translate_volatge(in_voltage, table, table_size);
+	auto out_voltage = table ? translate_volatge(in_voltage, table, table_size) : in_voltage;
 
 	// Если напряжение меньше MinV, то просто выдаём его на выход
 	if (out_voltage < MinV)
@@ -368,6 +372,10 @@ static uint16_t process_for_channel(
 		if (diff < -MaxDropDiff) diff = -MaxDropDiff;
 		smooth_voltage += diff;
 	}
+
+	// При необходимости ограничиваем напряженение сверху
+	if (smooth_voltage > max_voltage)
+		smooth_voltage = max_voltage;
 
 	// Возвращаем значение для ШИМ
 	return voltage_to_pwm(((uint32_t)OutGain * (uint32_t)smooth_voltage + 50UL) / 100UL, adc_ref_voltage);
@@ -388,16 +396,22 @@ int main()
 	// Таблица трансляции для основного ведущего колеса
 	TranslTableItem transl_table1[6] = {0};
 
-	// Таблица трансляции для колеса с редуктором
+	// Таблица трансляции для второго колеса
 	TranslTableItem transl_table2[6] = {0};
 
 	// "Плавные" значения выходного напряжения
-	int16_t smooth_voltage1 = 0;
-	int16_t smooth_voltage2 = 0;
+	uint16_t smooth_voltage1 = 0;
+	uint16_t smooth_voltage2 = 0;
+
+	auto reset_smooth_voltage = [&] () // ф-ция сброса значения плавных напряжений в 0
+	{
+		smooth_voltage1 = 0;
+		smooth_voltage2 = 0;
+	};
 
 	// Инициализируем таблицы трансляции напряжения ручки газа
-	init_transl_table(K, false, transl_table1);
-	init_transl_table(Kr, true, transl_table2);
+	init_transl_table(K, transl_table1);
+	init_transl_table(K2, transl_table2);
 
 	// Инициализируем АЦП
 	init_adc();
@@ -418,7 +432,13 @@ int main()
 
 		// Читаем значение эталонного источника 1.1 вольт
 		uint16_t adc1100 = read_filtered_adc_value(0b1100, true);
-		if (adc1100 == 0) continue; // "не заводимся", если что-то пошло не так
+
+		if (adc1100 == 0) // "не заводимся", если что-то пошло не так
+		{
+			reset_smooth_voltage();
+			set_pwm_values(0, 0);
+			continue;
+		}
 
 		// Получаем текущее значение напряжения питания
 		uint16_t adc_ref_voltage = (uint32_t)MaxAdc * 1100UL / (uint32_t)adc1100;
@@ -429,21 +449,31 @@ int main()
 		// Переводим значение с курка в милливольты
 		uint16_t in_voltage = adc_to_voltage(adc_value, adc_ref_voltage);
 
+		// Ещё проверка, что что-то пошло не так (Vin < 0.6 В или Vin > 4.5 В):
+		if ((in_voltage < 600) || (in_voltage > 4500))
+		{
+			reset_smooth_voltage();
+			set_pwm_values(0, 0);
+			continue;
+		}
+
 		// Производим обработку для основного колеса
 		uint16_t pwm_value1 = process_for_channel(
 			in_voltage,
 			adc_ref_voltage,
+			5500,
 			smooth_voltage1,
-			transl_table1,
+			(K != 0) ? transl_table1 : nullptr,
 			sizeof(transl_table1)/sizeof(TranslTableItem)
 		);
 
-		// Производим обработку для колеса с редуктором
+		// Производим обработку для второго колеса
 		uint16_t pwm_value2 = process_for_channel(
 			in_voltage,
 			adc_ref_voltage,
+			(uint32_t)MaxVk * (uint32_t)V2BorderPercent / 100U,
 			smooth_voltage2,
-			transl_table2,
+			(K2 != 0) ? transl_table2 : nullptr,
 			sizeof(transl_table2)/sizeof(TranslTableItem)
 		);
 
