@@ -41,6 +41,7 @@ SOFTWARE.
 	#define MaxVk 3600
 #endif
 
+
 // Минимальное напряжение на входе контроллера, на котором начинает крутиться колесо
 #ifndef MinV
 	#define MinV 1200
@@ -52,11 +53,6 @@ SOFTWARE.
 // 5       - сильно нелинейная
 #ifndef K
 	#define K 3
-#endif
-
-// Степень нелинейности второго колеса
-#ifndef K2
-	#define K2 3
 #endif
 
 // Максимальное время набора скорости в секундах
@@ -79,9 +75,28 @@ SOFTWARE.
 	#define OutGain 100
 #endif
 
+///////////////////////////////////////////////////////////////////////////////
+/* Настройка для полного привода */
+
+// Степень нелинейности второго колеса
+#ifndef K2
+	#define K2 3
+#endif
+
 // Ограничение выходного управляющего напряжения второго колеса в процентах
 #ifndef V2BorderPercent
 	#define V2BorderPercent 100
+#endif
+
+// Максимальное напряжение на входе контроллера второго колеса
+// колесо перестаёт набирать обороты
+#ifndef MaxVk2
+	#define MaxVk2 MaxVk
+#endif
+
+// Коэфициент усиления на выходе в процентах второго колеса
+#ifndef OutGain2
+	#define OutGain2 OutGain
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -117,6 +132,9 @@ struct TranslTableItem
 	uint16_t in_mv;  // входное напряжение в милливольтах
 	uint16_t out_mv; // выходное напряжение в милливольтах
 };
+
+// Напряжение на курке ну нуле в мВ
+constexpr uint16_t ZeroVoltage = 800;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -169,19 +187,19 @@ static void init_period_timer()
 	OCR0A = TimerPeriod;
 }
 
-static void init_transl_table(uint8_t k, TranslTableItem *table)
+static void init_transl_table(uint8_t k, TranslTableItem *table, uint16_t max_vk)
 {
 	// Точки перегиба на кривой
 	uint16_t mid_in1  = (uint32_t)(15-2 + k/2) * (MinV + MaxVg) / 30L;
-	uint16_t mid_out1 = (uint32_t)(15-2 - k) * (MinV + MaxVk) / 30L;
+	uint16_t mid_out1 = (uint32_t)(15-2 - k) * (MinV + max_vk) / 30L;
 	uint16_t mid_in2  = (uint32_t)(15+2 + k/2) * (MinV + MaxVg) / 30L;
-	uint16_t mid_out2 = (uint32_t)(15+2 - k) * (MinV + MaxVk) / 30L;
+	uint16_t mid_out2 = (uint32_t)(15+2 - k) * (MinV + max_vk) / 30L;
 
 	table[0] = {0,       0       };
 	table[1] = {MinV,    MinV    };
 	table[2] = {mid_in1, mid_out1};
 	table[3] = {mid_in2, mid_out2};
-	table[4] = {MaxVg,   MaxVk   };
+	table[4] = {MaxVg,   max_vk  };
 	table[5] = {5500,    5500    };
 }
 
@@ -347,9 +365,9 @@ static uint16_t voltage_to_pwm(uint16_t voltage, uint16_t rev_voltage)
 // Обработка текущей ситуации для одного колеса
 static uint16_t process_for_channel(
 	uint16_t              in_voltage,
-	uint16_t              adc_ref_voltage,
 	uint16_t              max_voltage,
 	uint16_t              &smooth_voltage,
+	uint16_t              out_gain,
 	const TranslTableItem *table,
 	const uint8_t         table_size)
 {
@@ -378,7 +396,7 @@ static uint16_t process_for_channel(
 		smooth_voltage = max_voltage;
 
 	// Возвращаем значение для ШИМ
-	return voltage_to_pwm(((uint32_t)OutGain * (uint32_t)smooth_voltage + 50UL) / 100UL, adc_ref_voltage);
+	return ((uint32_t)out_gain * (uint32_t)smooth_voltage + 50UL) / 100UL;
 }
 
 // Ожидание когда тикнет таймер, который отсчитывает период
@@ -386,8 +404,69 @@ static void wait_for_period_timer()
 {
 	for (uint8_t i = 0; i < PeriodTimerCnt; i++)
 	{
-		while (!(TIFR & OCF0A)) {}
-		TIFR = OCF0A;
+		while (!(TIFR & _BV(OCF0A))) {}
+		TIFR = _BV(OCF0A);
+	}
+}
+
+// Настройка привода в начале старта. Для входа в настройку при включении питания, должна быть нажата ручка газа.
+// После этого ручку газа надо опустить и один или два раза нажать на газ в теченим 5-ти секунд
+// Если нажать один раз, то включится только главное колесо, если два то только второе колесо
+static void configure_before_start(bool *motor1_is_on, bool *motor2_is_on)
+{
+	// Читаем значение эталонного источника 1.1 вольт
+	uint16_t adc1100 = read_filtered_adc_value(0b1100, true);
+
+	// Получаем текущее значение напряжения питания
+	uint16_t adc_ref_voltage = (uint32_t)MaxAdc * 1100UL / (uint32_t)adc1100;
+
+	// Читаем вольтаж АЦП с курка
+	uint16_t start_value = adc_to_voltage(read_filtered_adc_value(AdcChan, false), adc_ref_voltage);
+
+	constexpr unsigned MidVolatage = (MaxVg + ZeroVoltage) / 2;
+
+	// Напряжение ниже середины курка. Выходим
+	if (start_value < MidVolatage) return;
+
+	constexpr unsigned LowVolatage = (MaxVg + ZeroVoltage) / 3;
+	constexpr unsigned HighVolatage = 2 * (MaxVg + ZeroVoltage) / 3;
+
+	// Ждём, когда напряжение опуститься ниже LowVolatage
+	for (;;)
+	{
+		wait_for_period_timer();
+		uint16_t cur_value = adc_to_voltage(read_filtered_adc_value(AdcChan, false), adc_ref_voltage);
+		if (cur_value < LowVolatage) break;
+	}
+
+	// Считаем количество нажатий на курок в течение 5-ти секунд
+	uint8_t counter = 0;
+	bool high_exceed = false;
+	for (uint8_t i = 0; i < WorkFreq*5U; i++)
+	{
+		wait_for_period_timer();
+
+		uint16_t cur_value = adc_to_voltage(read_filtered_adc_value(AdcChan, false), adc_ref_voltage);
+		if (cur_value > HighVolatage) high_exceed = true;
+		if ((cur_value < LowVolatage) && high_exceed)
+		{
+			high_exceed = false;
+			counter++;
+		}
+	}
+
+	// В зависимости от количества нажатий, включаем только отдельные колёса
+	switch (counter)
+	{
+		case 1:
+			*motor1_is_on = true;
+			*motor2_is_on = false;
+			break;
+
+		case 2:
+			*motor1_is_on = false;
+			*motor2_is_on = true;
+			break;
 	}
 }
 
@@ -403,6 +482,9 @@ int main()
 	uint16_t smooth_voltage1 = 0;
 	uint16_t smooth_voltage2 = 0;
 
+	bool motor1_is_on = true;
+	bool motor2_is_on = true;
+
 	auto reset_smooth_voltage = [&] () // ф-ция сброса значения плавных напряжений в 0
 	{
 		smooth_voltage1 = 0;
@@ -410,8 +492,8 @@ int main()
 	};
 
 	// Инициализируем таблицы трансляции напряжения ручки газа
-	init_transl_table(K, transl_table1);
-	init_transl_table(K2, transl_table2);
+	init_transl_table(K, transl_table1, MaxVk);
+	init_transl_table(K2, transl_table2, MaxVk2);
 
 	// Инициализируем АЦП
 	init_adc();
@@ -419,11 +501,14 @@ int main()
 	// Инициализируем ШИМ и пины
 	init_pwm();
 
-	// Ждём 10 мс на всякий случай
-	_delay_ms(10);
+	// Ждём 500 мс на всякий случай
+	_delay_ms(500);
 
 	// Инициализируем таймер, который отсчитывает период для замера
 	init_period_timer();
+
+	// Проводим настройку перед работой (выбор привода)
+	configure_before_start(&motor1_is_on, &motor2_is_on);
 
 	for (;;)
 	{
@@ -458,26 +543,29 @@ int main()
 		}
 
 		// Производим обработку для основного колеса
-		uint16_t pwm_value1 = process_for_channel(
+		uint16_t out_voltage1 = motor1_is_on ? process_for_channel(
 			in_voltage,
-			adc_ref_voltage,
 			5500,
 			smooth_voltage1,
+			OutGain,
 			(K != 0) ? transl_table1 : nullptr,
 			sizeof(transl_table1)/sizeof(TranslTableItem)
-		);
+		) : ZeroVoltage;
 
 		// Производим обработку для второго колеса
-		uint16_t pwm_value2 = process_for_channel(
+		uint16_t out_voltage2 = motor2_is_on ? process_for_channel(
 			in_voltage,
-			adc_ref_voltage,
 			(uint32_t)MaxVk * (uint32_t)V2BorderPercent / 100U,
 			smooth_voltage2,
+			OutGain2,
 			(K2 != 0) ? transl_table2 : nullptr,
 			sizeof(transl_table2)/sizeof(TranslTableItem)
-		);
+		) : ZeroVoltage;
 
 		// Выдаём напряжения на выход через ШИМ
-		set_pwm_values(pwm_value1, pwm_value2);
+		set_pwm_values(
+			voltage_to_pwm(out_voltage1, adc_ref_voltage),
+			voltage_to_pwm(out_voltage2, adc_ref_voltage)
+		);
 	}
 }
